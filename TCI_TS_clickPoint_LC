@@ -1,0 +1,316 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[79.69379900539722, 42.96956964272463],
+          [79.69379900539722, 22.873748576003276],
+          [116.08051775539722, 22.873748576003276],
+          [116.08051775539722, 42.96956964272463]]], null, false),
+    world_cover = ee.ImageCollection("ESA/WorldCover/v100"),
+    boundaries = ee.FeatureCollection("FAO/GAUL/2015/level2"),
+    TCI_collection = ee.ImageCollection("users/ottimke/TCI_21_22");
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+////////////////////////////////////////////////////////////////////////
+////////////////// settings ////////////////////////////////////////////
+// palettes
+var palettes = require('users/gena/packages:palettes');
+var pal_magma = palettes.matplotlib.magma[7];
+var pal_plasm = palettes.matplotlib.plasma[7];
+var pal_virid = palettes.matplotlib.viridis[7];
+var pal_RdBu7 = palettes.colorbrewer.RdBu[7];
+
+// select ROI
+var selected = boundaries
+  .filter(ee.Filter.eq('ADM2_NAME','Mittelfranken'));
+  var geom = selected.geometry();
+
+////////////////////////////////////////////////////////////////////////
+////////////////////////load TCI////////////////////////////////////
+// asset list (years: 2003 - 2012)
+var assetList = ee.data.listAssets('users/ottimke/TCI_folder')['assets']
+                    .map(function(d) { return d.name });
+var collection = ee.ImageCollection(assetList);
+////////////////////////////////////////////////////////////////////////
+var TCI_list = ee.ImageCollection([
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2013_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2014_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2015_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2016_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2017_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2018_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2019_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2020_Global')]);
+////////////////////////////////////////////////////////////////////////
+///////// Landcover classification /////////////////////////////////////
+var filtered = world_cover.filter(ee.Filter.date((ee.Date.fromYMD(2020,1,1)), (ee.Date.fromYMD(2020,12,31))));
+// as its only one band, use .first to extract image
+var classification = ee.Image(filtered.first());
+// clip to roi
+var class_roi = classification.clip(geom);
+// classes from 0-10
+var classValues = [10, 20, 30, 40, 50, 60, 70, 80, 90, 95, 100];
+var remapValues = ee.List.sequence(0, 10);
+var label = 'lc';
+// result image of lc classes
+var lcBand = class_roi.remap(classValues, remapValues).rename(label).toByte();
+/////////////////////////////////////////////////////////////////////////////
+//////////////////////combine TCI and LC ////////////////////////////////////
+// as TCI is divided into two collections, the processing must be made twice
+// because system:id is different
+
+var TCI_adj = collection.map(function(img){
+  var TCI_roi = img.clip(geom);
+  // get year out of asset name
+  var doyCol= ee.String(TCI_roi.get('system:id'));
+  var year = ee.Number(doyCol.slice(44,48));
+  
+  // effect on TCI
+  var tciBand = TCI_roi.select('std').divide(10000)
+  .log().add(1.4189).divide(ee.Number(0.01).log().add(1.4189))
+  .rename('TCI');
+  
+  // adjust std
+  var tciStd = TCI_roi.select('std').divide(10000).rename('STD');
+  // add bands
+  var TCI_bands = TCI_roi.addBands([tciBand, lcBand,
+  (TCI_roi.select('std').divide(10000).rename('STD')),ee.Image.constant(1)]);
+  // select only bands of interest
+  var TCI_bandsn = TCI_bands.select(['TCI','STD','count','lc','constant'])
+  .set({'year2':year});
+  
+  // Compute time in fractional years since the epoch.
+  var date = ee.Date(TCI_bandsn.get('year2'));
+  var years = date.millis();
+  //var years = date.difference(ee.Date('1970-01-01'), 'year');
+  
+  return ee.Image(TCI_bandsn)
+  // Add a time band.
+    .addBands(ee.Image(years).rename('t'))
+    .float()
+    .set('system:time_start', years);
+});
+
+// same processing as above for second TCI-collection
+var TCI_adj2 = TCI_list.map(function(img){
+  var TCI_roi = img.clip(geom);
+  // get year 
+  var doyCol= ee.String(TCI_roi.get('system:id'));
+  var year = ee.Number(doyCol.slice(40,44));
+  
+  // effect on TCI
+  var tciBand = TCI_roi.select('std').divide(10000)
+  .log().add(1.4189).divide(ee.Number(0.01).log().add(1.4189))
+  .rename('TCI');
+  
+  // adjust std
+  var tciStd = TCI_roi.select('std').divide(10000).rename('STD');
+  
+  var TCI_bands = TCI_roi.addBands([tciBand, lcBand,
+  (TCI_roi.select('std').divide(10000).rename('STD')),ee.Image.constant(1)] );
+
+  var TCI_bandsn = TCI_bands.select(['TCI','STD','count','lc','constant'])
+  .set({'year2':year});
+  
+  // Compute time in fractional years since the epoch.
+  var date = ee.Date(TCI_bandsn.get('year2'));
+  var years = date.millis();
+  
+  return ee.Image(TCI_bandsn)
+  // Add a time band.
+    .addBands(ee.Image(years).rename('t'))
+    .float()
+    .set('system:time_start', years);
+
+});
+
+// combine both TCI-collections to one
+var TCI_all = TCI_adj.merge(TCI_adj2);
+
+///////////////////////////////////////////////////////////////////////////
+// timeseries pixel click
+
+function curves(coords){
+  
+  var geom = ee.Geometry.Point(coords.lon, coords.lat);
+  print(geom);
+  
+  // print lc
+  var classMapping = ee.Dictionary({
+  0: 'Tree Cover',
+  1: 'Shrubland',
+  2: 'Grassland',
+  3: 'Cropland',
+  4: 'Built up',
+  5: 'Sparse vegetation',
+  6: 'Snow and ice',
+  7: 'Permanent water bodies',
+  8: 'Herbaceous wetland',
+  9: 'Mangroves',
+  10: 'Moss and lichen',
+  });
+
+  var value_lc = lcBand.reduceRegion({
+    reducer: ee.Reducer.toList(),
+    geometry: geom,
+    scale: 231.656358264,
+    crs: 'SR-ORG:6974'});
+    
+  var classList = ee.List(value_lc.get('lc'));
+  var classnr = classList.get(0);
+  var mapped = classMapping.get(classnr);
+ 
+  
+  
+  print('Landcover' ,mapped);
+  
+
+  // std
+  var pre_table = TCI_all.map(function(img){
+  var res = img.reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: geom,
+    scale: 10
+  });
+  
+  var row = ee.List([
+    img.get('year2'), //year
+    res.get('TCI'), //mean
+    ee.Number(res.get('TCI')).add(res.get('STD')),  //upper std
+    ee.Number(res.get('TCI')).subtract(res.get('STD')), //lower std
+    ee.String(res.get('count')),
+    ]);
+  return ee.Feature(null, {row: row});
+  //return ee.Feature(null,res);
+  });
+
+
+  var dataTableServer = pre_table.aggregate_array('row');
+
+  var columnHeader = ee.List([[
+   {label: 'year', role: 'domain'},
+   {label: 'Mean', role: 'data'},
+   {label: 'Std_upper', role: 'interval'},
+   {label: 'Std_lower', role: 'interval'},
+   {label: 'count', role:'annotation'}
+    ]]);
+
+  dataTableServer = columnHeader.cat(dataTableServer);
+  
+  
+
+  dataTableServer.evaluate(function(dataTable) {
+    // Create and display a variance envelope chart.
+    var envelopeChart =
+        ui.Chart({dataTable: dataTable, chartType: 'LineChart'}).setOptions({
+          title: 'Time series at ROI '  ,
+          //intervals: {'style': 'area'},
+          //intervals: {style: 'boxes', barWidth: 1, boxWidth: 1, lineWidth: 0},
+          hAxis:
+              {title: 'Year', titleTextStyle: {italic: false, bold: true}},
+          vAxis:
+              {title: 'TCI', titleTextStyle: {italic: false, bold: true},viewWindow: {min: 0, max: 1}},
+          series: {
+            0: {color: '#087f23', lineWidth: 3},
+          // 1: {color: '#4caf50', lineWidth: 0.5}
+          }
+        });
+  print(envelopeChart);
+  });
+  
+  // npixel
+  var pre_table_n = TCI_all.map(function(img){
+    var res = img.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: geom,
+      scale: 10
+      });
+  
+    var row = ee.List([
+      img.get('year2'), //year
+      res.get('count'), //
+      //ee.String(res.get('count')),
+        ]);
+    return ee.Feature(null, {row: row});
+  //return ee.Feature(null,res);
+  });
+
+
+  var dataTableServer_n = pre_table_n.aggregate_array('row');
+
+  var columnHeader_n = ee.List([[
+   {label: 'year', role: 'domain'},
+   {label: 'Number of Pixel', role: 'data'},
+   //{label: 'number ann', role: 'annotation'}
+    ]]);
+
+  dataTableServer_n = columnHeader_n.cat(dataTableServer_n);
+
+
+  dataTableServer_n.evaluate(function(dataTable) {
+    // Create and display a variance envelope chart.
+    var envelopeChart =
+        ui.Chart({dataTable: dataTable, chartType: 'ColumnChart'}).setOptions({
+          title: 'Number of Pixel per Year',
+          //intervals: {'style': 'area'},
+          //intervals: {style: 'boxes', barWidth: 1, boxWidth: 1, lineWidth: 0},
+          hAxis:
+              {title: 'Year', titleTextStyle: {italic: false, bold: true}},
+          vAxis:
+              {title: 'Number of Pixel', titleTextStyle: {italic: false, bold: true}},
+          series: {
+            0: {color: '#087f23', lineWidth: 3},
+          // 1: {color: '#4caf50', lineWidth: 0.5}
+          }
+        });
+  print(envelopeChart);
+  });
+  
+  
+  var tciChart = ui.Chart.image.series(TCI_all.select('TCI'), geom)
+      .setChartType('ScatterChart')
+      .setOptions({
+        title: 'TCI time series at Pixel',
+       // vAxis: {viewWindow: {min: 0, max: 1}},
+        trendlines: {0: {
+          color: 'CC0000'
+        }},
+        lineWidth: 1,
+        pointSize: 3,
+      });
+  print(tciChart);
+
+
+  
+  
+}
+
+Map.add(ui.Label('Click Anywhere...in your RIO'));
+Map.onClick(curves);
+////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////// plots and maps //////////////////////////////////////
+
+//  TCI timeseries at ROI
+var tciChart = ui.Chart.image.series(TCI_all.select('TCI'), geom)
+    .setChartType('ScatterChart')
+    .setOptions({
+      title: 'TCI time series at ROI',
+     // vAxis: {viewWindow: {min: 0, max: 1}},
+      trendlines: {0: {
+        color: 'CC0000'
+      }},
+      lineWidth: 1,
+      pointSize: 3,
+    });
+print(tciChart);
+
+// maps
+Map.centerObject(geom, 10);
+Map.addLayer(TCI_all, {}, 'TCI_allBands',false);
+Map.addLayer(TCI_all.select('TCI'),{min: 0, max: 1, palette: pal_magma},'TCI');

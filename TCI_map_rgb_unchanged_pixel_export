@@ -1,0 +1,301 @@
+/**** Start of imports. If edited, may not auto-convert in the playground. ****/
+var lc_mod = ee.ImageCollection("MODIS/061/MCD12Q1"),
+    ERA5 = ee.ImageCollection("ECMWF/ERA5_LAND/DAILY_AGGR"),
+    geometry = 
+    /* color: #d63000 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[-88.41870766812974, 32.46281800309337],
+          [-88.41870766812974, 31.69016869135851],
+          [-87.02344399625474, 31.69016869135851],
+          [-87.02344399625474, 32.46281800309337]]], null, false);
+/***** End of imports. If edited, may not auto-convert in the playground. *****/
+// vis params grey basemap
+var GRAYMAP = [
+{   // Dial down the map saturation.
+stylers: [ { saturation: -100 } ]
+},{ // Dial down the label darkness.
+elementType: 'labels',
+stylers: [ { lightness: 20 } ]
+},{ // Simplify the road geometries.
+featureType: 'road',
+elementType: 'geometry',
+stylers: [ { visibility: 'simplified' } ]
+},{ // Turn off road labels.
+featureType: 'road',
+elementType: 'labels',
+stylers: [ { visibility: 'off' } ]
+},{ // Turn off all icons.
+elementType: 'labels.icon',
+stylers: [ { visibility: 'off' } ]
+},{ // Turn off all POIs.
+featureType: 'poi',
+elementType: 'all',
+stylers: [ { visibility: 'off' }]
+}
+];
+var ROI_global = ee.Geometry.Polygon({
+  coords: [[-180, -89.5], [180, -89.5], [180, 89.5], [-180, 89.5]],
+  geodesic: false});
+////////////////////////////////////////////////////////////////////////////////////
+////////////////////////landcover change////////////////////////////////////////////
+
+// function to mask out based on flags 
+var maskPixels = function(image0) {
+  // Get the land_water_flag bits.
+  var landWaterFlag = image0.expression('b("LW") == 1');
+  // Get quality of vi
+  var lc_qa = image0.expression('b("QC") == 1 || b("QC") == 3 || b("QC") == 5 || b("QC") == 6 || b("QC") == 7');
+  // Create a mask that filters out undesired areas
+  var mask = landWaterFlag.not()
+            .and(lc_qa.not());
+  return image0.updateMask(mask);
+};
+// use function maskPixels on landcover ImageCollection
+var lc_mask = lc_mod.map(maskPixels).select('LC_Type1').filterDate('2003','2022');
+
+///// new layer for change /////
+
+// computes the foward difference of an array.
+var forwardDifference = function(image) {
+  var left = image.arraySlice(0, 0, -1);
+  var right = image.arraySlice(0, 1);
+  return left.subtract(right);
+};
+// 2d array to 1d array
+var lc_array = lc_mask.toArray();
+var lengths = lc_array.arrayLength(0).toArray();
+lc_array = lc_array.arrayReshape(lengths, 1);
+// Compute the forward difference.  
+var difference = forwardDifference(lc_array).add(1); // if same class as year before: value 1
+var ones = ee.Image(ee.Array([1]));
+difference = ones.addBands(difference).toArray(0); 
+// difference: vaulue =1 -> no change in lc 
+var change = lc_array.arrayMask(difference.neq(1));
+// adj for layer
+var changeLengths = change.addBands(lengths).toArray(0);
+var chnageLengths = forwardDifference(changeLengths.multiply(-1));
+var maxIndex = changeLengths.arrayArgmax().arrayGet(0); // if 0 then no change
+
+// function to mask lc changed pixel
+var maskPixelsChange = function(image0) {
+  // Get unchanged pixel
+  var unchanged = image0.expression('b("change") == 0');
+  // Create a mask that filters out undesired areas
+  var mask = unchanged;
+  return image0.updateMask(mask);
+};
+////////////////////////temp & precipitation////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+// mean temp in °C
+var ERA5_temp = ERA5.select('temperature_2m').filterDate('2003','2022').mean().subtract(273.15);
+// sum precipitation per year, mean prec. over the years
+// unit before m, after mm 
+var years = ee.List.sequence(2003, 2022);
+var byyear = ee.ImageCollection.fromImages(
+      years.map(function (y) {
+        return ERA5.filter(ee.Filter.calendarRange(y, y, 'year'))
+                    .select('total_precipitation_sum').sum()
+                    .multiply(1000) // Unit m to mm 
+                    .set('year', y);
+}));
+var ERA5_prec = byyear.mean();
+////////////////////////TCI files////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+// asset list (years: 2003 - 2012)
+var assetList = ee.data.listAssets('users/ottimke/TCI_folder')['assets']
+                    .map(function(d) { return d.name });
+var collection = ee.ImageCollection(assetList);
+////////////////////////////////////////////////////////////////////////
+var TCI_list = ee.ImageCollection([
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2013_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2014_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2015_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2016_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2017_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2018_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2019_Global'),
+  ee.Image('users/gduveiller/TCI/TCI_precursor_NDVI_2020_Global')]);
+////////////////////////////////////////////////////////////////////////
+//////////// process and combine ///////////////////////////////////////
+// as TCI is divided into two collections, the processing must be made twice
+// because system:id is different
+
+var TCI_adj = collection.map(function(img){
+  // get year out of asset name
+  var doyCol= ee.String(img.get('system:id'));
+  var year = ee.Number(doyCol.slice(44,48));
+  // effect on TCI
+  var tciBand = img.select('std').divide(10000)
+  .log().add(1.4189).divide(ee.Number(0.01).log().add(1.4189))
+  .rename('TCI');
+    // adjust std
+  var tciStd = img.select('std').divide(10000).rename('STD');
+  var TCI_bands = img.addBands([tciBand, maxIndex.select('array').rename('change'),
+  (img.select('std').divide(10000).rename('STD')),ee.Image.constant(1),
+  ERA5_temp.select('temperature_2m').rename('temperature'),
+  ERA5_prec.select('total_precipitation_sum').rename('precipitation')]);
+  var TCI_bandsn = TCI_bands.select(['TCI','STD','count','constant','change',
+  'temperature','precipitation'])
+  .set({'year2':year});
+  // Compute time in fractional years since the epoch.
+  var date = ee.Date(TCI_bandsn.get('year2'));
+  var years = date.millis();
+  return ee.Image(TCI_bandsn)
+  // Add a time band.
+    .addBands(ee.Image(years).rename('t'))
+    .float()
+    .set('system:time_start', years)
+    .addBands(ee.Image(date.get('year')).rename('year'))
+    .float();
+
+   
+});
+
+// same processing as above for second TCI-collection
+var TCI_adj2 = TCI_list.map(function(img){
+
+  // get year 
+  var doyCol= ee.String(img.get('system:id'));
+  var year = ee.Number(doyCol.slice(40,44));
+  // effect on TCI
+  var tciBand = img.select('std').divide(10000)
+  .log().add(1.4189).divide(ee.Number(0.01).log().add(1.4189))
+  .rename('TCI');
+  // adjust std
+  var tciStd = img.select('std').divide(10000).rename('STD');
+  var TCI_bands = img.addBands([tciBand, maxIndex.select('array').rename('change'),
+  (img.select('std').divide(10000).rename('STD')),ee.Image.constant(1),
+  ERA5_temp.select('temperature_2m').rename('temperature'),
+  ERA5_prec.select('total_precipitation_sum').rename('precipitation')]);
+  var TCI_bandsn = TCI_bands.select(['TCI','STD','count','constant','change',
+  'temperature','precipitation'])
+  .set({'year2':year});
+  // Compute time in fractional years since the epoch.
+  var date = ee.Date(TCI_bandsn.get('year2'));
+  var years = date.millis();
+  return ee.Image(TCI_bandsn)
+  // Add a time band.
+    .addBands(ee.Image(years).rename('t'))
+    .float()
+    .set('system:time_start', years)
+    .addBands(ee.Image(date.get('year')).rename('year'))
+    .float();
+
+});
+// combine both TCI-collections to one
+var TCI_all = TCI_adj.merge(TCI_adj2);
+////////////////////////////////////////////////////////////////////////////////////////
+////////////// detrend tci time series /////////////////////////////////////////////////
+// List of the independent variable names
+var independents = ee.List(['constant', 't']);
+// Name of the dependent variable.
+var dependent = ee.String('TCI');
+// Compute a linear trend.  This will have two bands: 'residuals' and 
+// a 2x1 band called coefficients (columns are for dependent variables).
+var trend = TCI_all.select(independents.add(dependent))
+    .reduce(ee.Reducer.linearRegression(independents.length(), 1));
+// Flatten the coefficients into a 2-band image
+var coefficients = trend.select('coefficients')
+  .arrayProject([0])
+  .arrayFlatten([independents]);
+  
+var collection_all = TCI_all.map(function(image) {
+  var det = image.select(dependent).subtract(
+          image.select(independents).multiply(coefficients).reduce('sum'))
+          .rename('TCI_detrended')
+          .copyProperties(image, ['system:time_start']);
+  return ee.Image(det)
+  .addBands(image.select('TCI','temperature','precipitation','count','change','year'));
+});
+// mask changed pixel
+var collection_all_mask = collection_all.map(maskPixelsChange);
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////// time series to one image to plot rgb //////////////////////////////////////
+
+// reduce variables of interest of time series to one value 
+var meanTCI = collection_all_mask.select('TCI').reduce(ee.Reducer.mean());
+var stdDevTCI = collection_all_mask.select('TCI').reduce(ee.Reducer.stdDev());
+var meanCount = collection_all_mask.select('count').reduce(ee.Reducer.mean());
+
+// combine bands to one image
+var map_rgb = meanTCI.addBands(stdDevTCI.select('TCI_stdDev'))
+.addBands(meanCount.select('count_mean'));
+
+
+// 'normalize' function for better comparison of rgb-map
+var normalize = function(image) {
+  var min = image.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: ROI_global,
+    scale: 250,
+    maxPixels: 1e15
+  }).values().get(0);
+  
+  var max = image.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: ROI_global,
+    scale: 250,
+    maxPixels: 1e15
+  }).values().get(0);
+  
+  // normalize 0 to 1
+  var normalized = image.subtract(ee.Image.constant(min))
+  .divide(ee.Image.constant(max).subtract(ee.Image.constant(min)));
+  
+  return normalized;
+};
+
+// as min and max values take too long to compile (normalize function above) -> hardcode
+// TCI_stdDev min: 0.005 ; max: 0.148
+// count_mean min: 6.349 ; max: 549.8
+
+var normalizedStdDevTCI = stdDevTCI.select('TCI_stdDev').subtract(ee.Image.constant(0.005))
+                          .divide(ee.Image.constant(0.148).subtract(ee.Image.constant(0.005)));
+var normalizedMeanCount = meanCount.select('count_mean').subtract(ee.Image.constant(6.349))
+                          .divide(ee.Image.constant(549.8).subtract(ee.Image.constant(6.349)));
+
+// combine bands
+// TCI is not normalised as it only has values between 0 and 1 anyway
+var map_rgb_norm = meanTCI.addBands(normalizedStdDevTCI.select('TCI_stdDev'))
+.addBands(normalizedMeanCount.select('count_mean'));
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////// prepare to export /////////////////////////////////////////////////////
+
+// image collection to array (result: image with one band 'array')
+var collection_array = collection_all_mask.toArray();
+
+//select random pixel not masked
+var nPoints = 100; 
+
+var randomPoints = collection_array.sample({
+  //region: ee.Geometry(Map.getBounds(true)), 
+  region: ROI_global,
+  scale: 250, 
+  numPixels: nPoints,
+  geometries: true
+});
+
+// export as csv to drive
+Export.table.toDrive({
+  collection: randomPoints,
+  description:'sample_points',
+  fileFormat: 'csv',
+});
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////// map images /////////////////////////////////////////////////////
+
+Map.setOptions('Gray', {'Gray': GRAYMAP});
+Map.addLayer(map_rgb,{},'original values',false);
+Map.addLayer(map_rgb_norm, {}, 'norm val');
+
+
+
