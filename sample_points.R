@@ -158,3 +158,4 @@ ggplot(df_points, aes(x=count, y=TCI_detr, color=pointID)) +
   facet_wrap(~tp_class)+
   xlab("N Pixel")+
   ylab("TCI detrended")
+
