@@ -1,0 +1,11 @@
+# random points tci 
+library(readr)
+library(here)
+library(raster)
+library(rgdal)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(hrbrthemes)
+library(tidyr)
