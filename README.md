@@ -4,6 +4,7 @@ here you find...
 
 ## TCI_TS_clickPoint_LC
 This code provides the capability to visualize the TCI time series with a trendline for a selected region of interest (ROI). Additionally, by clicking on the map, users can retrieve geographic coordinates, landcover class information, TCI time series, and pixel count histograms for specific points.
+
 You can also access GEE directly via [this link](https://code.earthengine.google.com/f882ed53aaa6fc83c95cd5e50ff1d5b0).
 
 ## TCI_map_rgb_unchanged_pixel_export 
