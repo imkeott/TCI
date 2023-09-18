@@ -21,6 +21,7 @@ Additionally, you will receive a false-color image map where red represents TCI 
 
 You can also access GEE directly via [this link](https://code.earthengine.google.com/328f4ab5739189e2f3ab1243d641ad03).
 
-## third is the r script 
-its in this repository and you need ....
+## sample_points_TCI.R
+
+The R code processes the previously exported points, categorizing them based on climatic conditions, and generates scatterplots between pixel count and detrended TCI values.
 
