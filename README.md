@@ -9,13 +9,16 @@ You can also access GEE directly via [this link](https://code.earthengine.google
 ## TCI_map_rgb_unchanged_pixel_export 
 This code prepares the data for exporting as a Google Drive file, containing the following information (only for pixels that have not changed land cover types from 2003 to 2022):
 
-- TCI value
+- TCI values
 - TCI-detrended values
 - Mean annual temperature
 - Mean annual precipitation
 - Pixel count
 - Year
 - Longitude and latitude
+
+Additionally, you will receive a false-color image map where red represents TCI values, green represents standard deviation values, and blue represents the pixel count.
+
 You can also access GEE directly via [this link](https://code.earthengine.google.com/328f4ab5739189e2f3ab1243d641ad03).
 
 ## third is the r script 
